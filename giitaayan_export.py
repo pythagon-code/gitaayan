@@ -7,6 +7,7 @@ import urllib.parse
 from pathlib import Path
 
 import requests
+from tqdm import tqdm, trange
 
 from wikidata_imdb import resolve_film_imdb, resolve_person_imdb, split_person_field
 
@@ -57,6 +58,15 @@ def _join_ids(ids: list[str | None]) -> str:
     return "|".join(clean)
 
 
+def _parse_content_total(content_range: str | None) -> int | None:
+    if not content_range:
+        return None
+    m = re.match(r"^\d+-\d+/(\d+|\*)$", content_range.strip())
+    if not m or m.group(1) == "*":
+        return None
+    return int(m.group(1))
+
+
 def _main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--out", type=Path, default=Path("giitaayan_songs.csv"))
@@ -77,7 +87,6 @@ def _main() -> None:
     }
     session = requests.Session()
     session.headers.update({"User-Agent": UA})
-    offset = 0
     total_written = 0
     fieldnames = [
         "id",
@@ -103,106 +112,161 @@ def _main() -> None:
         "picturized_on_imdb_ids",
     ]
     args.out.parent.mkdir(parents=True, exist_ok=True)
+    rows, cr = _fetch_songs_page(base_headers, 0, args.page_size)
+    if not rows:
+        return
+    total_in_db = _parse_content_total(cr)
+    if args.max_rows:
+        target_rows = args.max_rows
+    elif total_in_db is not None:
+        target_rows = total_in_db
+    else:
+        target_rows = None
     with args.out.open("w", encoding="utf-8-sig", newline="") as fp:
         writer = csv.DictWriter(fp, fieldnames=fieldnames)
         writer.writeheader()
-        while True:
-            rows, cr = _fetch_songs_page(base_headers, offset, args.page_size)
-            if not rows:
-                break
-            for row in rows:
-                if args.max_rows and total_written >= args.max_rows:
-                    return
-                isb = str(row.get("isb_number") or "")
-                lyrics = ""
-                if not args.no_lyrics and isb:
-                    lyrics = _fetch_lyrics(isb, session, args.lyrics_sleep)
-                film_imdb = None
-                film_wd = None
-                lyricist_ids: list[str | None] = []
-                composer_ids: list[str | None] = []
-                singer_ids: list[str | None] = []
-                cast_ids: list[str | None] = []
-                if args.wikidata:
-                    film_imdb, film_wd = resolve_film_imdb(
-                        str(row.get("album") or ""),
-                        str(row.get("year") or "") or None,
-                        cache_path=args.cache,
-                        user_agent=UA,
-                        sleep_s=args.wikidata_sleep,
-                    )
-                    for n in split_person_field(row.get("lyricist")):
-                        lyricist_ids.append(
-                            resolve_person_imdb(
-                                n,
-                                cache_path=args.cache,
-                                user_agent=UA,
-                                sleep_s=args.wikidta_sleep,
-                            )
-                        )
-                    for n in split_person_field(row.get("composer")):
-                        composer_ids.append(
-                            resolve_person_imdb(
-                                n,
-                                cache_path=args.cache,
-                                user_agent=UA,
-                                sleep_s=args.wikidata_sleep,
-                            )
-                        )
-                    for n in split_person_field(row.get("singer")):
-                        singer_ids.append(
-                            resolve_person_imdb(
-                                n,
-                                cache_path=args.cache,
-                                user_agent=UA,
-                                sleep_s=args.wikidata_sleep,
-                            )
-                        )
-                    for n in split_person_field(row.get("picturized_on")):
-                        cast_ids.append(
-                            resolve_person_imdb(
-                                n,
-                                cache_path=args.cache,
-                                user_agent=UA,
-                                sleep_s=args.wikidata_sleep,
-                            )
-                        )
-                writer.writerow(
-                    {
-                        "id": row.get("id"),
-                        "isb_number": isb,
-                        "song_title": row.get("song_title"),
-                        "song_code": row.get("song_code"),
-                        "album": row.get("album"),
-                        "year": row.get("year"),
-                        "lyricist": row.get("lyricist"),
-                        "composer": row.get("composer"),
-                        "singer": row.get("singer"),
-                        "musicians": row.get("musicians"),
-                        "picturized_on": row.get("picturized_on"),
-                        "category": row.get("category"),
-                        "transcribed_by": row.get("transcribed_by"),
-                        "created_at": row.get("created_at"),
-                        "lyrics_text": lyrics,
-                        "film_imdb_id": film_imdb,
-                        "film_wikidata_id": film_wd,
-                        "lyricist_imdb_ids": _join_ids(lyricist_ids),
-                        "composer_imdb_ids": _join_ids(composer_ids),
-                        "singer_imdb_ids": _join_ids(singer_ids),
-                        "picturized_on_imdb_ids": _join_ids(cast_ids),
-                    }
+
+        def _write_song_row(row: dict) -> None:
+            nonlocal total_written
+            isb = str(row.get("isb_number") or "")
+            lyrics = ""
+            if not args.no_lyrics and isb:
+                lyrics = _fetch_lyrics(isb, session, args.lyrics_sleep)
+            film_imdb = None
+            film_wd = None
+            lyricist_ids: list[str | None] = []
+            composer_ids: list[str | None] = []
+            singer_ids: list[str | None] = []
+            cast_ids: list[str | None] = []
+            if args.wikidata:
+                film_imdb, film_wd = resolve_film_imdb(
+                    str(row.get("album") or ""),
+                    str(row.get("year") or "") or None,
+                    cache_path=args.cache,
+                    user_agent=UA,
+                    sleep_s=args.wikidata_sleep,
                 )
-                total_written += 1
-            offset += len(rows)
-            if cr:
-                m = re.match(r"^\d+-\d+/(\d+|\*)$", cr.strip())
-                if m and m.group(1) != "*":
-                    total = int(m.group(1))
-                    if offset >= total:
+                for n in split_person_field(row.get("lyricist")):
+                    lyricist_ids.append(
+                        resolve_person_imdb(
+                            n,
+                            cache_path=args.cache,
+                            user_agent=UA,
+                            sleep_s=args.wikidata_sleep,
+                        )
+                    )
+                for n in split_person_field(row.get("composer")):
+                    composer_ids.append(
+                        resolve_person_imdb(
+                            n,
+                            cache_path=args.cache,
+                            user_agent=UA,
+                            sleep_s=args.wikidata_sleep,
+                        )
+                    )
+                for n in split_person_field(row.get("singer")):
+                    singer_ids.append(
+                        resolve_person_imdb(
+                            n,
+                            cache_path=args.cache,
+                            user_agent=UA,
+                            sleep_s=args.wikidata_sleep,
+                        )
+                    )
+                for n in split_person_field(row.get("picturized_on")):
+                    cast_ids.append(
+                        resolve_person_imdb(
+                            n,
+                            cache_path=args.cache,
+                            user_agent=UA,
+                            sleep_s=args.wikidata_sleep,
+                        )
+                    )
+            writer.writerow(
+                {
+                    "id": row.get("id"),
+                    "isb_number": isb,
+                    "song_title": row.get("song_title"),
+                    "song_code": row.get("song_code"),
+                    "album": row.get("album"),
+                    "year": row.get("year"),
+                    "lyricist": row.get("lyricist"),
+                    "composer": row.get("composer"),
+                    "singer": row.get("singer"),
+                    "musicians": row.get("musicians"),
+                    "picturized_on": row.get("picturized_on"),
+                    "category": row.get("category"),
+                    "transcribed_by": row.get("transcribed_by"),
+                    "created_at": row.get("created_at"),
+                    "lyrics_text": lyrics,
+                    "film_imdb_id": film_imdb,
+                    "film_wikidata_id": film_wd,
+                    "lyricist_imdb_ids": _join_ids(lyricist_ids),
+                    "composer_imdb_ids": _join_ids(composer_ids),
+                    "singer_imdb_ids": _join_ids(singer_ids),
+                    "picturized_on_imdb_ids": _join_ids(cast_ids),
+                }
+            )
+            total_written += 1
+
+        def _emit_page_batch(page_rows: list[dict]) -> bool:
+            if args.max_rows:
+                rem = args.max_rows - total_written
+                if rem <= 0:
+                    return False
+                if rem < len(page_rows):
+                    page_rows = page_rows[:rem]
+            for row in tqdm(page_rows, desc="Songs", leave=False, unit="song"):
+                _write_song_row(row)
+            return True
+
+        use_trange = target_rows is not None and args.page_size > 0
+        if use_trange:
+            num_pages = max(1, (target_rows + args.page_size - 1) // args.page_size)
+            for page_idx in trange(num_pages, desc="Pages"):
+                if page_idx > 0:
+                    offset = page_idx * args.page_size
+                    rows, _cr = _fetch_songs_page(
+                        base_headers, offset, args.page_size
+                    )
+                    if not rows:
                         break
-            else:
-                if len(rows) < args.page_size:
+                if not _emit_page_batch(rows):
                     break
+                if target_rows is not None and total_written >= target_rows:
+                    break
+                if (
+                    total_in_db is not None
+                    and (page_idx + 1) * args.page_size >= total_in_db
+                ):
+                    break
+        else:
+            offset = 0
+            first = True
+            with tqdm(unit="song", desc="Songs") as song_bar:
+                while True:
+                    if first:
+                        first = False
+                    else:
+                        rows, _cr = _fetch_songs_page(
+                            base_headers, offset, args.page_size
+                        )
+                    if not rows:
+                        break
+                    batch = rows
+                    if args.max_rows:
+                        rem = args.max_rows - total_written
+                        if rem <= 0:
+                            break
+                        batch = rows[:rem]
+                    for row in batch:
+                        _write_song_row(row)
+                        song_bar.update(1)
+                    offset += len(rows)
+                    if args.max_rows and total_written >= args.max_rows:
+                        break
+                    if len(rows) < args.page_size:
+                        break
 
 
 if __name__ == "__main__":
