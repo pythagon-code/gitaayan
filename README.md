@@ -5,7 +5,7 @@
 - Teammate 1: `Aryan Gupta` (`aryang11`)
 - Teammate 2: `Akshan Mohaney` (`mohaney2`)
 - Teammate 3: `Abhay Pokhriyal` (`abhayp4`)
-- Teammate 4: `Satwik Nareddula` (`SatwikN27`)
+- Teammate 4: `Satwik Nareddula` (`srn6`)
 
 ## Project spec
 
