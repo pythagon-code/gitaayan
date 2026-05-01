@@ -20,6 +20,7 @@ NAME_BASICS_URL = "https://datasets.imdbws.com/name.basics.tsv.gz"
 
 
 def split_person_field(value: str | None) -> list[str]:
+    # split multi-name credit fields into individual names.
     if not value:
         return []
     parts = re.split(r"[,;]", value)
@@ -36,6 +37,7 @@ def split_person_field(value: str | None) -> list[str]:
 
 
 def normalize_text(value: str | None) -> str:
+    # normalize text for simple fuzzy matching across sources.
     if value is None or pd.isna(value):
         return ""
     v = str(value).lower().strip()
@@ -44,6 +46,7 @@ def normalize_text(value: str | None) -> str:
 
 
 def extract_lyrics_body(raw: str) -> str:
+    # prefer the indian block when present.
     if "#indian" in raw and "#endindian" in raw:
         a = raw.index("#indian") + len("#indian")
         b = raw.index("#endindian")
@@ -59,6 +62,7 @@ def fetch_lyrics(isb: str, session: requests.Session) -> str:
 
 
 def fetch_all_songs(headers: dict, page_size: int, max_rows: int) -> list[dict]:
+    # page through the giitaayan api until exhaustion or max_rows.
     rows: list[dict] = []
     offset = 0
     while True:
@@ -86,6 +90,7 @@ def fetch_all_songs(headers: dict, page_size: int, max_rows: int) -> list[dict]:
 
 
 def build_film_mapping(songs_df: pd.DataFrame) -> dict[tuple[str, int | None], str]:
+    # build (normalized album, year) -> imdb title id mapping.
     film_keys_df = songs_df[["album", "year"]].copy()
     film_keys_df["album_norm"] = film_keys_df["album"].map(normalize_text)
     film_keys_df["year_int"] = pd.to_numeric(film_keys_df["year"], errors="coerce").astype("Int64")
@@ -95,7 +100,7 @@ def build_film_mapping(songs_df: pd.DataFrame) -> dict[tuple[str, int | None], s
     min_year = min(years) - 3 if years else 1900
     max_year = max(years) + 3 if years else 2035
 
-    # 1) title.basics.tsv.gz (load once, subset immediately)
+    # load title.basics and keep only likely matches.
     basics_hits: list[pd.DataFrame] = []
     chunks = pd.read_csv(
         TITLE_BASICS_URL,
@@ -122,7 +127,7 @@ def build_film_mapping(songs_df: pd.DataFrame) -> dict[tuple[str, int | None], s
     )
     basics_df["startYear"] = pd.to_numeric(basics_df["startYear"], errors="coerce").astype("Int64")
 
-    # 2) title.akas.tsv.gz (load next, subset immediately)
+    # load title.akas next and prioritize india-region titles.
     tconst_candidates = set(basics_df["tconst"].dropna().tolist())
     akas_hits: list[pd.DataFrame] = []
     chunks = pd.read_csv(
@@ -139,7 +144,7 @@ def build_film_mapping(songs_df: pd.DataFrame) -> dict[tuple[str, int | None], s
         in_region = chunk["region"].fillna("").str.upper().eq("IN")
         keep = chunk["title_norm"].isin(album_set) & in_region
         if tconst_candidates:
-            # Retain known candidate tconst rows even if region is not IN.
+            # keep known candidates even when region is not in.
             keep = keep | chunk["titleId"].isin(tconst_candidates)
         hit = chunk.loc[keep, ["titleId", "title_norm", "region", "language", "isOriginalTitle"]]
         if not hit.empty:
@@ -181,6 +186,7 @@ def build_film_mapping(songs_df: pd.DataFrame) -> dict[tuple[str, int | None], s
             film_map[(title, year)] = ""
             continue
         cand = grouped.get_group(title).copy()
+        # score candidates by title type and year proximity.
         cand["score"] = 0
         cand["score"] += cand["titleType"].isin(["movie", "short"]).astype(int) * 3
         if year is not None:
@@ -194,6 +200,7 @@ def build_film_mapping(songs_df: pd.DataFrame) -> dict[tuple[str, int | None], s
 
 
 def build_person_mapping(songs_df: pd.DataFrame) -> dict[str, str]:
+    # build normalized person name -> imdb person id mapping.
     people: set[str] = set()
     for col in ["lyricist", "composer", "singer", "picturized_on"]:
         for val in songs_df[col].fillna(""):
@@ -206,7 +213,7 @@ def build_person_mapping(songs_df: pd.DataFrame) -> dict[str, str]:
     if not people:
         return mapping
 
-    # 3) name.basics.tsv.gz (load after title files, subset immediately)
+    # load name.basics after title files and subset in-stream.
     chunks = pd.read_csv(
         NAME_BASICS_URL,
         compression="gzip",
@@ -232,12 +239,13 @@ def attach_person_ids(row: pd.Series, field: str, person_map: dict[str, str]) ->
         nid = person_map.get(normalize_text(name), "")
         if nid:
             ids.append(nid)
-    # keep order and deduplicate
+    # keep stable order while removing duplicates.
     dedup = list(dict.fromkeys(ids))
     return "|".join(dedup)
 
 
 def main() -> None:
+    # run full pipeline: fetch songs, map imdb ids, and export csv.
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", type=Path, default=Path("giitaayan_songs_imdb.csv"))
     ap.add_argument("--page-size", type=int, default=500)

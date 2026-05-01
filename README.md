@@ -3,8 +3,8 @@
 ## Team
 - Teammate 1: `Aryan Gupta` (`aryang11`)
 - Teammate 2: `Akshan Mohaney` (`mohaney2`)
-- Teammate 3: `<Name 3>` (`<NetID 3>`)
-- Teammate 4: `<Name 4>` (`<NetID 4>`)
+- Teammate 3: `Abhay` (`<NetID 3>`)
+- Teammate 4: `Satwik` (`SatwikN27`)
 
 ## Project spec
 Goal: scrape New Giitaayan song records and produce a CSV with metadata plus IMDb IDs.
