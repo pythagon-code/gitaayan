@@ -22,7 +22,7 @@ Required output:
 ## Current status
 
 - `test_imdb.csv` is a **test run limited to 200 rows**.
-- Full CSV for the full ~15.6k songs is **in progress**.
+- `gitayaan_full_imdb.csv` is **in progress**.
 
 ## Main pipeline
 
