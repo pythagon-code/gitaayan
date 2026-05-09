@@ -21,9 +21,12 @@ NAME_BASICS_URL = "https://datasets.imdbws.com/name.basics.tsv.gz"
 
 def split_person_field(value: str | None) -> list[str]:
     # split multi-name credit fields into individual names.
-    if not value:
+    if value is None or pd.isna(value):
         return []
-    parts = re.split(r"[,;]", value)
+    text = str(value).strip()
+    if not text:
+        return []
+    parts = re.split(r"[,;]", text)
     out: list[str] = []
     for p in parts:
         q = p.strip()
